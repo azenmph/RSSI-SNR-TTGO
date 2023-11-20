@@ -4,12 +4,15 @@
 #include <hal/hal.h>
 #include <U8g2lib.h>
 #include "images.h"
-
-
+#include <Thread.h>
+#include <ThreadController.h>
 
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 
 const int botonPin = 25;
+int ScreenState = 1;
+int Button = 1;
+int Radio = 1;
 
 const lmic_pinmap lmic_pins = {
     .nss = 18,
@@ -74,8 +77,81 @@ void onEvent(ev_t ev) {
             }
 
             break;
-            }
+            
+    }
 }
+
+
+void do_send() {
+    if (!(LMIC.opmode & OP_TXRXPEND)) {
+        uint8_t data[] = {0x01};
+        LMIC_setTxData2(1, data, sizeof(data), 1);
+        Serial.println(F("Enviando..."));
+    } else {
+        Serial.println(F("Operación pendiente"));
+    }
+}
+
+void displayLoadingAnimation() {
+    for (int i = 0; i < 360; i += 10) { // Adjust the increment for speed
+        u8g2.clearBuffer();
+
+        // Calculate the end point of the line
+        float angle = i * (PI / 180.0); // Convert degrees to radians
+        int x0 = 64, y0 = 32; // Center of the screen
+        int x1 = x0 + 15 * cos(angle); // Adjust '15' for length of the line
+        int y1 = y0 + 15 * sin(angle);
+
+        // Draw the line
+        u8g2.drawLine(x0, y0, x1, y1);
+
+        // Draw the text "Loading..."
+        u8g2.setFont(u8g2_font_ncenB08_tr); // Choose an appropriate font
+        u8g2.drawStr(40, 50, "Loading..."); // Adjust position as needed
+
+        // Send the buffer to the display
+        u8g2.sendBuffer();
+        delay(100); // Adjust delay for speed
+    }
+}
+
+
+ThreadController controll = ThreadController();
+Thread* ScreenThread = new Thread();
+Thread* RadioThread = new Thread();
+Thread* ButtonThread = new Thread();
+
+void ScreenFunc(){
+    if (ScreenState == 1){
+      displayLoadingAnimation();
+    }
+}
+
+
+void ButtonFunc(){
+    if (digitalRead(botonPin) == LOW && (Button == 0)) {
+        Serial.println("Botón pulsado");
+        Button = 1;
+        }
+}
+    
+void RadioFunc(){
+    if ((Button == 1) && (Radio == 0)){
+      Radio = 1;
+      if (!(LMIC.opmode & OP_JOINING) && LMIC.devaddr == 0) {
+            Serial.println("Iniciando proceso de unión...");
+            LMIC_startJoining();
+        } else if (LMIC.devaddr != 0) {
+            Serial.println("Botón pulsado, enviando datos...");
+            do_send();
+            Radio = 0;
+        }
+      }
+}
+
+
+
+
 
 void setup() {
   
@@ -108,37 +184,28 @@ void setup() {
      // Configuración de SF y opcion de transmisión
     LMIC_setDrTxpow(DR_SF7,14); // Establece SF7 como el factor de propagación y 14 dBm como la potencia de transmisión
 
-    // Unión a la red
-    //LMIC_startJoining();
     Serial.println("Configuración completada.");
+
+
+
+    ScreenThread->onRun(ScreenFunc);
+    ScreenThread->setInterval(1000);
+
+    ButtonThread->onRun(ButtonFunc);
+    ButtonThread->setInterval(500);
+
+    RadioThread->onRun(RadioFunc);
+    RadioThread->setInterval(10);
+
+    controll.add(ScreenThread);
+    controll.add(ButtonThread);
+    controll.add(RadioThread);
 }
 
-void do_send() {
-    if (!(LMIC.opmode & OP_TXRXPEND)) {
-        uint8_t data[] = {0x01};
-        LMIC_setTxData2(1, data, sizeof(data), 1);
-        Serial.println(F("Enviando..."));
-    } else {
-        Serial.println(F("Operación pendiente"));
-    }
-}
+
 
 void loop() {
-    unsigned long currentMillis = millis();
-    if (digitalRead(botonPin) == LOW && currentMillis - lastButtonPress > 1000) {
-        Serial.println("Botón pulsado");
-        // Imagen de cargando
-        lastButtonPress = currentMillis;
-
- if (!(LMIC.opmode & OP_JOINING) && LMIC.devaddr == 0) {
-            Serial.println("Iniciando proceso de unión...");
-            LMIC_startJoining();
-        } else if (LMIC.devaddr != 0) {
-            Serial.println("Botón pulsado, enviando datos...");
-            do_send();
-        }
-    }
-    os_runloop_once();
+    controll.run();
 }
 
 
